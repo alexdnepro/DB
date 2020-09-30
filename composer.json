@@ -2,7 +2,7 @@
     "name": "power/db",
     "description": "Simple static class to work with mysql databases",
     "type": "library",
-    "license": "BSD-3",
+    "license": "BSD-3-Clause",
     "authors": [
         {
             "name": "Power",
