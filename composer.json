@@ -1,0 +1,21 @@
+{
+    "name": "power/db",
+    "description": "Simple static class to work with mysql databases",
+    "type": "library",
+    "license": "BSD-3",
+    "authors": [
+        {
+            "name": "Power",
+            "email": "mastergtx@ukr.net"
+        }
+    ],
+    "require": {
+        "php": ">=7.0.0",
+        "ext-mysqli": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "Power\\": "src/"
+        }
+    }
+}
