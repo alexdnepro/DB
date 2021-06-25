@@ -24,11 +24,25 @@ class DB {
      * @var bool set it to call error when no data found on query
      */
     public static $fail_on_nodata = false;
-
+	private static $last_query_time = [];
+	/**
+	 * @var int time to check connection alive from last query
+	 */
+	private static $ping_idle_time = 60;
     /**
      * @var array contains all queries statistics
      */
     protected static $stats = [];
+
+	/**
+	 * @var bool|string Log all sql queries to filename
+	 */
+	private static $log_sql = false;
+	private static $log_sql_debug = false;
+	/**
+	 * @var bool|string Log all errors to filename
+	 */
+	private static $error_log = false;
 
     private function __construct () {}
 
@@ -54,21 +68,28 @@ class DB {
         self::$error_handler = $handler;
     }
 
+	public static function SetLogSql(string $file_name, bool $add_debug = false)
+	{
+		self::$log_sql = $file_name;
+		self::$log_sql_debug = $add_debug;
+	}
+
+	public static function SetErrorLog(string $file_name)
+	{
+		self::$error_log = $file_name;
+	}
+
     /**
      * @param string $mysql_host Can be either a host name or an IP address
      * @param string $mysql_user The MySQL user name
      * @param string $mysql_pass If not provided or NULL, the MySQL server will attempt to authenticate the user against those user records which have no password only. This allows one username to be used with different permissions (depending on if a password as provided or not)
-     * @param string $db_name [optional] If provided will specify the default database to be used when performing queries
-     * @param string $charset [optional] Make set names query after connecting
-     * @param int $port [optional] Specifies the port number to attempt to connect to the MySQL server
-     * @param string $socket [optional] Specifies the socket or named pipe that should be used
-     * @param string $log_sql [optional] Save all queries to log file
-     * @param bool $log_add_debug [optional] Add backtrace info for all queries logs
-     * @param string|bool $error_log [optional] If false - errors will save to php error log, else log will write to specified file
+     * @param string|null $db_name [optional] If provided will specify the default database to be used when performing queries
+     * @param string|null $charset [optional] Make set names query after connecting
+     * @param int|null $port [optional] Specifies the port number to attempt to connect to the MySQL server
+     * @param string|null $socket [optional] Specifies the socket or named pipe that should be used
      * @return int id of created instance
      */
-    public static function Init(string $mysql_host, string $mysql_user, string $mysql_pass, $db_name = null, $charset = null, $port = null,
-                                $socket = null, $log_sql = null, $log_add_debug = false, $error_log = false): int
+    public static function Init(string $mysql_host, string $mysql_user, string $mysql_pass, string $db_name = null, string $charset = null, int $port = null, string $socket = null): int
     {
         self::$connections[] = null;
         self::$configs[] =
@@ -79,16 +100,18 @@ class DB {
                 'db_name' => $db_name,
                 'charset' => $charset,
                 'port' => $port,
-                'socket' => $socket,
-                'log_sql' => $log_sql,
-                'log_add_debug' => $log_add_debug,
-                'error_log' => $error_log
+                'socket' => $socket
             ];
         self::$initialized = true;
-        return count(self::$connections) - 1;
+        $id = count(self::$connections) - 1;
+        self::$last_query_time[$id] = time();
+        return $id;
     }
 
-    public static function instance()
+	/**
+	 * @return mysqli|null
+	 */
+	public static function instance()
     {
         self::ConnectBase();
         return self::$connections[self::$current_instance];
@@ -106,7 +129,16 @@ class DB {
             self::ShowError('DB not initialized');
         }
         if (self::$connections[self::$current_instance] !== null) {
-            return;
+	        if (self::$last_query_time[self::$current_instance] + self::$ping_idle_time < time())
+	        {
+		        if (!self::$connections[self::$current_instance]->ping())
+		        {
+			        // Trying to reconnect
+			        self::$connections[self::$current_instance] = null;
+		        }
+	        } else {
+		        return;
+	        }
         }
         self::$connections[self::$current_instance] = new mysqli(
             self::$configs[self::$current_instance]['mysql_host'],
@@ -120,8 +152,9 @@ class DB {
         }
         if (self::$configs[self::$current_instance]['charset'] !== null)
         {
-            self::$connections[self::$current_instance]->set_charset(self::$configs[self::$current_instance]['charset']) or self::ShowError(self::$configs[self::$current_instance]['charset']->error);
+            self::$connections[self::$current_instance]->set_charset(self::$configs[self::$current_instance]['charset']) or self::ShowError(self::$configs[self::$current_instance]->error);
         }
+	    self::$last_query_time[self::$current_instance] = time();
     }
 
     /**
@@ -134,8 +167,8 @@ class DB {
         }
         if (self::$error_handler)
         {
-            $funct = self::$error_handler;
-            $funct($msg);
+            $function = self::$error_handler;
+            $function($msg);
         } else {
             error_log($msg);
         }
@@ -147,11 +180,11 @@ class DB {
      * Examples:
      * $db->query("DELETE FROM table WHERE id=?i", $id);
      *
-     * @param string $query - an SQL query with placeholders
+     * @param string $sql - an SQL query with placeholders
      * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
      * @return mysqli_result whatever mysqli_query returns
      */
-    public static function query()
+    public static function query(string $sql, ...$arg)
     {
         return self::rawQuery(self::prepareQuery(func_get_args()));
     }
@@ -159,11 +192,11 @@ class DB {
     /**
      * Conventional function to fetch single row.
      *
-     * @param bool|mysqli_result $result - myqli result
+     * @param bool|mysqli_result $result - mysqli result
      * @param int $mode - optional fetch mode
      * @return array|false whatever mysqli_fetch_array returns
      */
-    public static function fetch($result, $mode = MYSQLI_ASSOC)
+    public static function fetch($result, int $mode = MYSQLI_ASSOC)
     {
         return mysqli_fetch_array($result, $mode);
     }
@@ -183,7 +216,7 @@ class DB {
      *
      * @return int whatever mysqli_insert_id returns
      */
-    public static function insertId()
+    public static function insertId(): int
     {
         return mysqli_insert_id(self::instance());
     }
@@ -205,11 +238,11 @@ class DB {
      * $name = $db->getOne("SELECT name FROM table WHERE id=1");
      * $name = $db->getOne("SELECT name FROM table WHERE id=?i", $id);
      *
-     * @param string $query - an SQL query with placeholders
+     * @param string $sql - an SQL query with placeholders
      * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
-     * @return string|FALSE either first column of the first row of resultset or FALSE if none found
+     * @return string|FALSE either first column of the first row of result set or FALSE if none found
      */
-    public static function getOne()
+    public static function getOne(string $sql, ...$arg)
     {
         $query = self::prepareQuery(func_get_args());
         if ($res = self::rawQuery($query))
@@ -237,11 +270,11 @@ class DB {
      * $data = $db->getRow("SELECT * FROM table WHERE id=1");
      * $data = $db->getRow("SELECT * FROM table WHERE id=?i", $id);
      *
-     * @param string $query - an SQL query with placeholders
+     * @param string $sql - an SQL query with placeholders
      * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
-     * @return array|FALSE either associative array contains first row of resultset or FALSE if none found
+     * @return array|FALSE either associative array contains first row of result set or FALSE if none found
      */
-    public static function getRow()
+    public static function getRow(string $sql, ...$arg)
     {
         $query = self::prepareQuery(func_get_args());
         if ($res = self::rawQuery($query)) {
@@ -266,11 +299,11 @@ class DB {
      * $ids = $db->getCol("SELECT id FROM table WHERE cat=1");
      * $ids = $db->getCol("SELECT id FROM tags WHERE tagname = ?s", $tag);
      *
-     * @param string $query - an SQL query with placeholders
+     * @param string $sql - an SQL query with placeholders
      * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
      * @return array enumerated array of first fields of all rows of resultset or empty array if none found
      */
-    public static function getCol(): array
+    public static function getCol(string $sql, ...$arg): array
     {
         $ret   = array();
         $query = self::prepareQuery(func_get_args());
@@ -292,11 +325,11 @@ class DB {
      * $data = $db->getAll("SELECT * FROM table");
      * $data = $db->getAll("SELECT * FROM table LIMIT ?i,?i", $start, $rows);
      *
-     * @param string $query - an SQL query with placeholders
+     * @param string $sql - an SQL query with placeholders
      * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
      * @return array enumerated 2d array contains the resultset. Empty if no rows found.
      */
-    public static function getAll(): array
+    public static function getAll(string $sql, ...$arg): array
     {
         $ret   = array();
         $query = self::prepareQuery(func_get_args());
@@ -318,12 +351,12 @@ class DB {
      * $data = $db->getInd("id", "SELECT * FROM table");
      * $data = $db->getInd("id", "SELECT * FROM table LIMIT ?i,?i", $start, $rows);
      *
-     * @param string $index - name of the field which value is used to index resulting array
-     * @param string $query - an SQL query with placeholders
+     * @param string $ind - name of the field which value is used to index resulting array
+     * @param string $sql - an SQL query with placeholders
      * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
      * @return array - associative 2d array contains the resultset. Empty if no rows found.
      */
-    public static function getInd(): array
+    public static function getInd(string $ind, string $sql, ...$arg): array
     {
         $args  = func_get_args();
         $index = array_shift($args);
@@ -347,12 +380,12 @@ class DB {
      * Examples:
      * $data = $db->getIndCol("name", "SELECT name, id FROM cities");
      *
-     * @param string $index - name of the field which value is used to index resulting array
-     * @param string $query - an SQL query with placeholders
+     * @param string $ind - name of the field which value is used to index resulting array
+     * @param string $sql - an SQL query with placeholders
      * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
      * @return array - associative array contains key=value pairs out of resultset. Empty if no rows found.
      */
-    public static function getIndCol(): array
+    public static function getIndCol(string $ind, string $sql, ...$arg): array
     {
         $args  = func_get_args();
         $index = array_shift($args);
@@ -390,11 +423,11 @@ class DB {
      * }
      * $data = $db->getAll("SELECT * FROM table WHERE bar=?s ?p", $bar, $qpart);
      *
-     * @param string $query - whatever expression contains placeholders
+     * @param string $sql - whatever expression contains placeholders
      * @param mixed  $arg,... unlimited number of arguments to match placeholders in the expression
      * @return string - initial expression with placeholders substituted with data.
      */
-    public static function parse(): string
+    public static function parse(string $sql, ...$arg): string
     {
         return self::prepareQuery(func_get_args());
     }
@@ -427,7 +460,7 @@ class DB {
 
     /**
      * function to filter out arrays, for the whitelisting purposes
-     * useful to pass entire superglobal to the INSERT or UPDATE query
+     * useful to pass entire super global to the INSERT or UPDATE query
      * OUGHT to be used for this purpose,
      * as there could be fields to which user should have no access to.
      *
@@ -484,7 +517,8 @@ class DB {
     protected static function rawQuery(string $query)
     {
         self::ConnectBase();
-        if (self::$configs[self::$current_instance]['log_sql']) {
+	    self::$last_query_time[self::$current_instance] = time();
+        if (self::$log_sql) {
             self::log_sql($query);
         }
         $start = microtime(TRUE);
@@ -521,7 +555,7 @@ class DB {
         $query = '';
         $raw   = array_shift($args);
         $array = preg_split('~(\?[nsiuap])~u',$raw,null,PREG_SPLIT_DELIM_CAPTURE);
-        $arguments_num  = (int)count($args);
+        $arguments_num  = count($args);
         $placeholders_num  = (int)floor(count($array) / 2);
         if ( $placeholders_num !== $arguments_num )
         {
@@ -599,7 +633,7 @@ class DB {
             return '`' .str_replace('`', '``',$value). '`';
         }
         self::ShowError('Empty value for identifier (?n) placeholder');
-        return $value;
+        return false;
     }
 
     protected static function createIN($data):string
@@ -646,7 +680,7 @@ class DB {
     }
 
     /**
-     * On a long run we can eat up too much memory with mere statsistics
+     * On a long run we can eat up too much memory with mere statistics
      * Let's keep it at reasonable size, leaving only last 100 entries.
      */
     protected static function cutStats()
@@ -659,10 +693,6 @@ class DB {
         }
     }
 
-    /**
-     * Returns current error or false
-     * @return string|false
-     */
     public static function GetError()
     {
         if (self::instance()->connect_errno > 0) {
@@ -715,11 +745,11 @@ class DB {
 
     private static function log_sql($sql)
     {
-        $dh = fopen (self::$configs[self::$current_instance]['log_sql'], 'ab+');
+        $dh = fopen (self::$log_sql, 'ab+');
         if ($dh)
         {
             fwrite($dh, self::GetDate().' '.$sql."\n");
-            if (self::$configs[self::$current_instance]['log_add_debug'])
+            if (self::$log_sql_debug)
             {
                 fwrite($dh, self::GetBacktraceInfo(2));
                 fwrite($dh, "\n");
@@ -731,12 +761,12 @@ class DB {
     private static function log_error($sql)
     {
         $msg = self::GetDate().' '.self::GetError()."\nQuery: ".$sql."\n".self::GetBacktraceInfo(10)."\n";
-        if (self::$configs[self::$current_instance]['error_log'] === false)
+        if (self::$error_log === false)
         {
             error_log($msg);
             return;
         }
-        $dh = fopen (self::$configs[self::$current_instance]['error_log'], 'ab+');
+        $dh = fopen (self::$error_log, 'ab+');
         if ($dh)
         {
             fwrite($dh, $msg);

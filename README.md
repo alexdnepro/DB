@@ -74,5 +74,7 @@ DB::SetErrorHandler('ErrorHandler');
 ```php
 use \Power\DB;
 
-DB::Init('localhost', 'user', 'passwd', 'dbname', 'utf8mb4', null, null, __DIR__.'/mysql_sql.log', false, __DIR__.'/mysql_error.log');
+DB::Init('localhost', 'user', 'passwd', 'dbname', 'utf8mb4');
+DB::SetErrorLog(__DIR__.'/mysql_error.log');
+DB::SetLogSql(__DIR__.'/mysql_sql.log', false);
 ```
