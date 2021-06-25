@@ -132,7 +132,7 @@ class mDB
 		$this->last_query_time = time();
 		if ($this->config['charset'] !== null)
 		{
-			$this->instance->set_charset($this->config['charset']['charset']) or $this->ShowError($this->instance->error);
+			$this->instance->set_charset($this->config['charset']) or $this->ShowError($this->instance->error);
 		}
 	}
 
