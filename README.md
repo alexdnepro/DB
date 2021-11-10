@@ -1,7 +1,24 @@
-Simple static class for working with MySql databases
+Simple static/non-static classes for working with MySql databases
 * **PHP version:** 7.0+
 * **Composer:** `composer require power/db`
 * This code was taken as a basis https://github.com/colshrapnel/safemysql
+
+#### Two ways to use: static and non/static
+All methods available in both class types
+```php
+use \Power\DB;
+
+// Non static
+$db = new \Power\mDB('localhost', 'users', 'passwd', 'dbname', 'utf8mb4');
+// Select all records from users table
+$data = $db->getAll('SELECT * FROM ?n', 'users');
+
+// Static
+DB::Init('localhost', 'users', 'passwd', 'dbname', 'utf8mb4');
+// Select all records from users table
+$data = DB::getAll('SELECT * FROM ?n', 'users');
+```
+
 #### Work with one database
 ```php
 use \Power\DB;
@@ -22,16 +39,21 @@ DB::getOne('SELECT count(*) FROM `users`');
 // Insert some data
 $table_name = 'logs';
 $data = [
-    'create_date' => ['now()'],  // when the value is an array it will not be escaped, useful for functions or someone else code
+    'create_date' => DB::pure('now()'),  // when you don't need to escape value - use DB::pure method
     'login' => 'tester',
     'userid' => 5
 ];
 DB::query('INSERT INTO ?n SET ?u', $table_name, $data);
+// or user insert method
+DB::insert($table_name, $data);
 // Get inserted id from last query
 echo DB::insertId();
+
+// Update records
+DB::update($table_name, $data)
 ```
 
-#### Work with several databases
+#### Work with several databases from static class
 ```php
 use \Power\DB;
 

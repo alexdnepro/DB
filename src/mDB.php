@@ -10,7 +10,11 @@ use mysqli_result;
 /**
  * Class mDB
  * @package Power
- * This class is created for non static code using
+ * This class is created for non-static code using
+ * @method begin_transaction ($flags = 0 , $name = 0 )
+ * @method rollback ($flags = 0 , $name = 0 )
+ * @method commit ($flags = 0 , $name = 0 )
+ * @method prepare (string $query)
  */
 class mDB
 {
@@ -49,6 +53,18 @@ class mDB
 	 */
 	private $error_log = false;
 
+    /**
+     * Call standard methods from mysqli instance
+     *
+     * @param string $name
+     * @param array $arguments
+     * @return false|mixed
+     */
+    public function __call(string $name, array $arguments)
+    {
+        $this->ConnectBase();
+        return call_user_func_array(array($this->getInstance(), $name), $arguments);
+    }
 
 	public function SetLogSql(string $file_name, bool $add_debug = false): mDB
 	{
@@ -161,7 +177,7 @@ class mDB
 	 *
 	 * @param string $sql - an SQL query with placeholders
 	 * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
-	 * @return mysqli_result whatever mysqli_query returns
+	 * @return bool|mysqli_result whatever mysqli_query returns
 	 */
 	public function query(string $sql, ...$arg)
 	{
@@ -173,7 +189,7 @@ class mDB
 	 *
 	 * @param bool|mysqli_result $result - mysqli result
 	 * @param int $mode - optional fetch mode
-	 * @return array|false whatever mysqli_fetch_array returns
+	 * @return array|bool whatever mysqli_fetch_array returns
 	 */
 	public function fetch($result, int $mode = MYSQLI_ASSOC)
 	{
@@ -219,7 +235,7 @@ class mDB
 	 *
 	 * @param string $sql - an SQL query with placeholders
 	 * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
-	 * @return string|FALSE either first column of the first row of resultset or FALSE if none found
+	 * @return string|bool either first column of the first row of resultset or FALSE if none found
 	 */
 	public function getOne(string $sql, ...$arg)
 	{
@@ -251,7 +267,7 @@ class mDB
 	 *
 	 * @param string $sql - an SQL query with placeholders
 	 * @param mixed  $arg,... unlimited number of arguments to match placeholders in the query
-	 * @return array|FALSE either associative array contains first row of resultset or FALSE if none found
+	 * @return array|bool either associative array contains first row of resultset or FALSE if none found
 	 */
 	public function getRow(string $sql, ...$arg)
 	{
@@ -429,7 +445,7 @@ class mDB
 	 * @param string $input   - field name to test
 	 * @param  array  $allowed - an array with allowed variants
 	 * @param  string $default - optional variable to set if no match found. Default to false.
-	 * @return string|FALSE    - either sanitized value or FALSE
+	 * @return string|bool    - either sanitized value or FALSE
 	 */
 	public function whiteList(string $input, array $allowed, $default=false)
 	{
@@ -437,9 +453,62 @@ class mDB
 		return ($found === false) ? $default : $allowed[$found];
 	}
 
+    /**
+     * Insert data array into table
+     *
+     * Example:
+     *
+     * $data = [
+     *      'date' => DB::pure('now()'),
+     *      'name' => 'Test',
+     *      'value' => 123
+     * ];
+     * $db->insert('users', $data);
+     *
+     * @param string $table_name
+     * @param array $data
+     * @param string $db_name
+     * @return bool|mysqli_result
+     */
+    public function insert(string $table_name, array $data, string $db_name = '')
+    {
+        if ($db_name !== '')
+        {
+            return $this->query('INSERT INTO ?n.?n SET ?u', $db_name, $table_name, $data);
+        }
+        return $this->query('INSERT INTO ?n SET ?u', $table_name, $data);
+    }
+
+    /**
+     * Update data array in table
+     *
+     * Example:
+     *
+     * $data = [
+     *      'date' => DB::pure('now()'),
+     *      'name' => 'Test',
+     *      'value' => 123
+     * ];
+     * $db->update('users', $data, 'id>5');
+     *
+     * @param string $table_name
+     * @param array $data
+     * @param string $where
+     * @param string $db_name
+     * @return bool|mysqli_result
+     */
+    public function update(string $table_name, array $data, string $where = '', string $db_name = '')
+    {
+        if ($db_name !== '')
+        {
+            return $this->query('UPDATE ?n.?n SET ?u'.($where !== '' ? ' WHERE '.$where : ''), $db_name, $table_name, $data);
+        }
+        return $this->query('UPDATE ?n SET ?u'.($where !== '' ? ' WHERE '.$where : ''), $table_name, $data);
+    }
+
 	/**
 	 * function to filter out arrays, for the whitelisting purposes
-	 * useful to pass entire superglobal to the INSERT or UPDATE query
+	 * useful to pass entire super global to the INSERT or UPDATE query
 	 * OUGHT to be used for this purpose,
 	 * as there could be fields to which user should have no access to.
 	 *
@@ -647,8 +716,9 @@ class mDB
 		$query = $comma = '';
 		foreach ($data as $key => $value)
 		{
-			if (is_array($value)) {
-				$str = $value[0];
+            // Check if value is DB::pure object
+			if (is_object($value) && isset($value->sql)) {
+				$str = $value->sql;
 			} else {
 				$str = $this->escapeString($value);
 			}
@@ -664,7 +734,7 @@ class mDB
 	 */
 	protected function cutStats()
 	{
-		if ( count($this->stats) > 500 )
+		if ( count($this->stats) > 100 )
 		{
 			reset($this->stats);
 			$first = key($this->stats);
@@ -707,13 +777,13 @@ class mDB
 		return '{'.implode(',',$res).'}';
 	}
 
-	private static function GetBacktraceInfo($max_id = 2, $skip_id = 2): string
+	private static function GetBacktraceInfo($max_id = 2): string
 	{
 		$bt = debug_backtrace();
 		$l = '';
 		foreach ($bt as $i => $val)
 		{
-			if ($i < $skip_id) {
+			if ($i < 2) {
 				continue;
 			}
 			if ($i > $max_id) {
@@ -734,7 +804,7 @@ class mDB
 			fwrite($dh, self::GetDate().' '.$sql."\n");
 			if ($this->log_sql_debug)
 			{
-				fwrite($dh, self::GetBacktraceInfo(2));
+				fwrite($dh, self::GetBacktraceInfo());
 				fwrite($dh, "\n");
 			}
 			fclose($dh);
