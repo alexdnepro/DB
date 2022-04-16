@@ -52,6 +52,10 @@ class mDB
 	 * @var bool|string Log all errors to filename
 	 */
 	private $error_log = false;
+	/**
+	 * @var bool Save query statistics
+	 */
+	private $save_stats = false;
 
     /**
      * Call standard methods from mysqli instance
@@ -65,6 +69,16 @@ class mDB
         $this->ConnectBase();
         return call_user_func_array(array($this->getInstance(), $name), $arguments);
     }
+
+	/**
+	 * @param bool $value
+	 * @return mDB
+	 */
+	public function SetSaveStats(bool $value): mDB
+	{
+		$this->save_stats = $value;
+		return $this;
+	}
 
 	public function SetLogSql(string $file_name, bool $add_debug = false): mDB
 	{
@@ -150,13 +164,18 @@ class mDB
 		{
 			$this->instance->set_charset($this->config['charset']) or $this->ShowError($this->instance->error);
 		}
+		$this->connected = true;
 	}
 
 	/**
 	 * @param bool|string $msg
 	 */
-	public function ShowError($msg = false )
+	public function ShowError($msg = false, $add_error_log = false )
 	{
+		if ($add_error_log)
+		{
+			$this->log_error($msg);
+		}
 		if (!$msg) {
 			$msg = 'Database query error';
 		}
@@ -541,6 +560,10 @@ class mDB
 	 */
 	public function lastQuery()
 	{
+		if (!$this->save_stats)
+		{
+			return null;
+		}
 		$last = end($this->stats);
 		return $last['query'];
 	}
@@ -569,31 +592,35 @@ class mDB
 		if ($this->log_sql !== false) {
 			$this->log_sql($query);
 		}
-		$start = microtime(TRUE);
-		$res   = mysqli_query($this->instance, $query);
-		$timer = microtime(TRUE) - $start;
-
-		$this->stats[] = array(
-			'query' => $query,
-			'start' => $start,
-			'timer' => $timer,
-			'rows' => 0
-		);
-		end($this->stats);
-		$key = key($this->stats);
-		if (!$res)
-		{
-			$error = mysqli_error($this->instance);
-			$this->stats[$key]['error'] = $error;
-			$this->cutStats();
-
-			$this->log_error($query);
-			$this->ShowError();
-		} else
-		{
-			$this->stats[$key]['rows'] = $this->instance->affected_rows;
+		$start = 0;
+		if ($this->save_stats) {
+			$start = microtime(TRUE);
 		}
-		$this->cutStats();
+		$res = mysqli_query($this->instance, $query);
+		if ($this->save_stats)
+		{
+			$timer = microtime(TRUE) - $start;
+
+			$this->stats[] = array(
+				'query' => $query,
+				'start' => $start,
+				'timer' => $timer,
+				'rows' => 0
+			);
+			end($this->stats);
+			$key = key($this->stats);
+			if (!$res) {
+				$error = mysqli_error($this->instance);
+				$this->stats[$key]['error'] = $error;
+				$this->cutStats();
+
+				$this->log_error($query);
+				$this->ShowError();
+			} else {
+				$this->stats[$key]['rows'] = $this->instance->affected_rows;
+			}
+			$this->cutStats();
+		}
 		return $res;
 	}
 
@@ -607,7 +634,7 @@ class mDB
 		$placeholders_num  = (int)floor(count($array) / 2);
 		if ( $placeholders_num !== $arguments_num )
 		{
-			$this->ShowError("Number of args ($arguments_num) doesn't match number of placeholders ($placeholders_num) in [$raw]");
+			$this->ShowError("Number of args ($arguments_num) doesn't match number of placeholders ($placeholders_num) in [$raw]", true);
 			die();
 		}
 
@@ -654,7 +681,7 @@ class mDB
 		}
 		if(!is_numeric($value))
 		{
-			$this->ShowError( "Integer (?i) placeholder expects numeric value, ".gettype($value)." given");
+			$this->ShowError( "Integer (?i) placeholder expects numeric value, ".gettype($value)." given", true);
 			die();
 		}
 		if (is_float($value))
@@ -680,7 +707,7 @@ class mDB
 		{
 			return '`' .str_replace('`', '``',$value). '`';
 		}
-		$this->ShowError('Empty value for identifier (?n) placeholder');
+		$this->ShowError('Empty value for identifier (?n) placeholder', true);
 		return false;
 	}
 
@@ -688,7 +715,7 @@ class mDB
 	{
 		if (!is_array($data))
 		{
-			$this->ShowError('Value for IN (?a) placeholder should be array');
+			$this->ShowError('Value for IN (?a) placeholder should be array', true);
 		}
 		if (!$data)
 		{
@@ -707,17 +734,20 @@ class mDB
 	{
 		if (!is_array($data))
 		{
-			$this->ShowError( 'SET (?u) placeholder expects array, ' .gettype($data). ' given');
+			$this->ShowError( 'SET (?u) placeholder expects array, ' .gettype($data). ' given', true);
 		}
 		if (!$data)
 		{
-			$this->ShowError('Empty array for SET (?u) placeholder');
+			$this->ShowError('Empty array for SET (?u) placeholder', true);
 		}
 		$query = $comma = '';
 		foreach ($data as $key => $value)
 		{
-            // Check if value is DB::pure object
-			if (is_object($value) && isset($value->sql)) {
+			// Check if value is DB::pure object
+			if (is_numeric($value))
+			{
+				$str = $this->escapeInt($value);
+			} elseif (is_object($value) && isset($value->sql)) {
 				$str = $value->sql;
 			} else {
 				$str = $this->escapeString($value);
@@ -734,7 +764,7 @@ class mDB
 	 */
 	protected function cutStats()
 	{
-		if ( count($this->stats) > 100 )
+		if ( $this->save_stats && count($this->stats) > 100 )
 		{
 			reset($this->stats);
 			$first = key($this->stats);
@@ -798,32 +828,22 @@ class mDB
 
 	private function log_sql($sql)
 	{
-		$dh = fopen ($this->log_sql, 'ab+');
-		if ($dh)
+		$msg = self::GetDate().' '.$sql.PHP_EOL;
+		if ($this->log_sql_debug)
 		{
-			fwrite($dh, self::GetDate().' '.$sql."\n");
-			if ($this->log_sql_debug)
-			{
-				fwrite($dh, self::GetBacktraceInfo());
-				fwrite($dh, "\n");
-			}
-			fclose($dh);
+			$msg .= self::GetBacktraceInfo().PHP_EOL;
 		}
+		file_put_contents($this->log_sql, $msg, FILE_APPEND);
 	}
 
 	private function log_error($sql)
 	{
-		$msg = self::GetDate().' '.$this->GetError()."\nQuery: ".$sql."\n".self::GetBacktraceInfo(10)."\n";
+		$msg = self::GetDate().' '.$this->GetError().PHP_EOL.'Query: '.$sql.PHP_EOL.self::GetBacktraceInfo(10).PHP_EOL;
 		if ($this->error_log === false)
 		{
 			error_log($msg);
 			return;
 		}
-		$dh = fopen ($this->error_log, 'ab+');
-		if ($dh)
-		{
-			fwrite($dh, $msg);
-			fclose($dh);
-		}
+		file_put_contents($this->error_log, $msg, FILE_APPEND);
 	}
 }

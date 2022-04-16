@@ -309,6 +309,17 @@ class DB {
         return self::instance()->lastQuery();
     }
 
+	/**
+	 * Function to save query statistics
+	 *
+	 * @param bool $value
+	 * @return void
+	 */
+	public static function SetSaveStats(bool $value)
+	{
+		self::instance()->SetSaveStats($value);
+	}
+
     /**
      * Function to get all query statistics.
      *
