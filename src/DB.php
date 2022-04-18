@@ -315,7 +315,7 @@ class DB {
 	 * @param bool $value
 	 * @return void
 	 */
-	public static function SetSaveStats(bool $value)
+	public static function SetSaveStats(bool $value = true)
 	{
 		self::instance()->SetSaveStats($value);
 	}

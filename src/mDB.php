@@ -74,7 +74,7 @@ class mDB
 	 * @param bool $value
 	 * @return mDB
 	 */
-	public function SetSaveStats(bool $value): mDB
+	public function SetSaveStats(bool $value = true): mDB
 	{
 		$this->save_stats = $value;
 		return $this;
@@ -686,7 +686,7 @@ class mDB
 		}
 		if (is_float($value))
 		{
-			$value = number_format($value, 0, '.', ''); // may lose precision on big numbers
+			$value = number_format($value, 6, '.', ''); // may lose precision on big numbers
 		}
 		return $value;
 	}

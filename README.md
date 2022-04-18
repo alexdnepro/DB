@@ -60,6 +60,8 @@ use \Power\DB;
 $db1 = DB::Init('localhost', 'users', 'passwd', 'dbname', 'utf8mb4');
 $db2 = DB::Init('localhost', 'users1', 'passwd1', 'dbname1', 'utf8mb4');
 
+// Turn on saving statistics
+DB::SetSaveStats(true);
 // After initializing, first DB is selected for work
 // Get associated array with id field as key
 DB::getIndCol('id', 'SELECT `id`,`name` FROM `users`');
