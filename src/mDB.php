@@ -95,9 +95,9 @@ class mDB
 
 	/**
 	 * Set error handler for any DB errors
-	 * @param callable $handler function($error_message)
+	 * @param callable|string $handler function($error_message)
 	 */
-	public function SetErrorHandler(callable $handler): mDB
+	public function SetErrorHandler($handler): mDB
 	{
 		$this->error_handler = $handler;
 		return $this;

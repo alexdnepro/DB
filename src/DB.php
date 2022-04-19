@@ -43,9 +43,9 @@ class DB {
 
     /**
      * Set error handler for any DB errors
-     * @param callable $handler function($error_message)
+     * @param callable|string $handler function($error_message)
      */
-    public static function SetErrorHandler(callable $handler)
+    public static function SetErrorHandler($handler)
     {
         self::CheckInit();
         self::instance()->SetErrorHandler($handler);
