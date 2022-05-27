@@ -612,14 +612,14 @@ class mDB
 			if (!$res) {
 				$error = mysqli_error($this->instance);
 				$this->stats[$key]['error'] = $error;
-				$this->cutStats();
-
-				$this->log_error($query);
-				$this->ShowError();
 			} else {
 				$this->stats[$key]['rows'] = $this->instance->affected_rows;
 			}
 			$this->cutStats();
+		}
+		if (!$res) {
+			$this->log_error($query);
+			$this->ShowError();
 		}
 		return $res;
 	}
