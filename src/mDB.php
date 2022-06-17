@@ -148,7 +148,7 @@ class mDB
 				return;
 			}
 		}
-		$this->instance = new mysqli(
+		$this->instance = @new mysqli(
 			$this->config['mysql_host'],
 			$this->config['mysql_user'],
 			$this->config['mysql_pass'],
