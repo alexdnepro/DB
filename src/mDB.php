@@ -137,14 +137,10 @@ class mDB
 	{
 		if ($this->connected)
 		{
-			if ($this->last_query_time + $this->ping_idle_time < time())
-			{
-				if (!$this->instance->ping())
-				{
-					// Trying to reconnect
-					$this->connected = false;
-				}
-			} else {
+			if (($this->last_query_time + $this->ping_idle_time < time()) && !$this->instance->ping()) {
+                // Trying to reconnect
+                $this->connected = false;
+            } else {
 				return;
 			}
 		}
