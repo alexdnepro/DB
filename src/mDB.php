@@ -684,6 +684,11 @@ class mDB
 		{
 			$value = number_format($value, 6, '.', ''); // may lose precision on big numbers
 		}
+        if (strpos($value, 'e') !== false)
+        {
+            // Если найден символ 'e' экранируем как строку для избежания багов
+            return $this->escapeString($value);
+        }
 		return $value;
 	}
 
