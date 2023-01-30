@@ -399,7 +399,7 @@ class DB {
     }
 
     /**
-     * DONT'T USE - function in development
+     * DON'T USE - function in development
      * Make condition for where/having and other parameters
      *
      * Example:
@@ -418,6 +418,30 @@ class DB {
     {
         $placeholder = is_numeric($value) ? '?i' : '?s';
         return self::instance()->parse('?n '.$operator.' '.$placeholder, $field, $value);
+    }
+
+    public static function escapeParam($val)
+    {
+        if (is_int($val) || is_float($val)) {
+            return self::escapeInt($val);
+        }
+        if (is_object($val) && isset($val->sql)) {
+            return $val->sql;
+        }
+        return self::escapeString($val);
+    }
+
+    private static function escapeInt($value)
+    {
+        if ($value === NULL)
+        {
+            return 'NULL';
+        }
+        if (is_float($value))
+        {
+            $value = number_format($value, 6, '.', ''); // may lose precision on big numbers
+        }
+        return $value;
     }
 
 }

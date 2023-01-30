@@ -459,7 +459,7 @@ class mDB
 	 *
 	 * @param string $input   - field name to test
 	 * @param  array  $allowed - an array with allowed variants
-	 * @param  string $default - optional variable to set if no match found. Default to false.
+	 * @param  string|bool $default - optional variable to set if no match found. Default to false.
 	 * @return string|bool    - either sanitized value or FALSE
 	 */
 	public function whiteList(string $input, array $allowed, $default=false)
@@ -625,13 +625,13 @@ class mDB
 		$this->ConnectBase();
 		$query = '';
 		$raw   = array_shift($args);
-		$array = preg_split('~(\?[nsiuap])~u',$raw,null,PREG_SPLIT_DELIM_CAPTURE);
+		$array = preg_split('~(\?[nsiuap])~u',$raw,-1,PREG_SPLIT_DELIM_CAPTURE);
 		$arguments_num  = count($args);
 		$placeholders_num  = (int)floor(count($array) / 2);
 		if ( $placeholders_num !== $arguments_num )
 		{
 			$this->ShowError("Number of args ($arguments_num) doesn't match number of placeholders ($placeholders_num) in [$raw]", true);
-			die();
+			return '';
 		}
 
 		foreach ($array as $i => $part)
@@ -678,7 +678,7 @@ class mDB
 		if(!is_numeric($value))
 		{
 			$this->ShowError( "Integer (?i) placeholder expects numeric value, ".gettype($value)." given", true);
-			die();
+			return '';
 		}
 		if (is_float($value))
 		{
@@ -745,7 +745,7 @@ class mDB
 		foreach ($data as $key => $value)
 		{
 			// Check if value is DB::pure object
-			if (is_numeric($value))
+			if (is_int($value) || is_float($value))
 			{
 				$str = $this->escapeInt($value);
 			} elseif (is_object($value) && isset($value->sql)) {

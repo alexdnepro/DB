@@ -8,7 +8,7 @@ All methods available in both class types
 ```php
 use \Power\DB;
 
-// Non static
+// Non-static
 $db = new \Power\mDB('localhost', 'users', 'passwd', 'dbname', 'utf8mb4');
 // Select all records from users table
 $data = $db->getAll('SELECT * FROM ?n', 'users');
@@ -101,4 +101,26 @@ use \Power\DB;
 DB::Init('localhost', 'user', 'passwd', 'dbname', 'utf8mb4');
 DB::SetErrorLog(__DIR__.'/mysql_error.log');
 DB::SetLogSql(__DIR__.'/mysql_sql.log', false);
+```
+
+#### Use ``DBCacheQuery`` class to insert a large number of records using fewer queries
+```php
+// Create class and point table name and col names for inserting records
+$cache_items = new \DBCacheQuery('item_list', ['id', 'name', 'icon', 'list', 'data_type']);
+foreach ($some_data as $data)
+{
+    // Use Add method for each new row
+    // Make sure, that param array has the same data order as you make in class creation
+    $cache_items->Add(
+    [
+        $data['id'],
+        $data['name'],
+        $data['icon'],
+        $data['list'],
+        $data['type']
+    ]);
+}
+// Then use Flush method to send the remaining data from the cache
+$cache_items->Flush();
+// That's all
 ```
