@@ -5,6 +5,7 @@ namespace Power;
 
 use mysqli;
 use mysqli_result;
+use mysqli_sql_exception;
 
 
 /**
@@ -19,43 +20,36 @@ use mysqli_result;
 class mDB
 {
 	private $connected = false;
-	private $config;
-	/**
-	 * @var mysqli
-	 */
+    /** @var array<string,mixed> */
+    private $config;
+	/** @var mysqli */
 	private $instance;
-	/**
-	 * @var callable|null
-	 */
+    /** @var int unix timestamp */
 	private $last_query_time;
 	/**
-	 * @var int time to check connection alive from last query
+	 * @var int seconds time to check connection alive from last query
 	 */
 	private $ping_idle_time = 60;
-	private $error_handler;
-	/**
-	 * @var bool set it to call error when no data found on query
-	 */
+    /** @var callable|string|null */
+	private $error_handler = null;
+    /** @var bool set it to call error when no data found on query */
 	public $fail_on_nodata = false;
 
-	/**
-	 * @var array contains all queries statistics
-	 */
+    /** @var array<int,array<string,mixed>> contains all queries statistics */
 	protected $stats = [];
 
-	/**
-	 * @var bool|string Log all sql queries to filename
-	 */
+    /** @var bool|string Log all sql queries to filename */
 	private $log_sql = false;
 	private $log_sql_debug = false;
-	/**
-	 * @var bool|string Log all errors to filename
-	 */
+    /** @var bool|string Log all errors to filename */
 	private $error_log = false;
-	/**
-	 * @var bool Save query statistics
-	 */
+    /** @var bool Save query statistics */
 	private $save_stats = false;
+    /** @var int how many reconnect attempts */
+    private $reconnect_attempts = 2;
+
+    /** @var int microseconds sleep between reconnect attempts */
+    private $reconnect_backoff_us = 150000;
 
     /**
      * Call standard methods from mysqli instance
@@ -67,7 +61,7 @@ class mDB
     public function __call(string $name, array $arguments)
     {
         $this->ConnectBase();
-        return call_user_func_array(array($this->getInstance(), $name), $arguments);
+        return $this->getInstance()->{$name}(...$arguments);
     }
 
 	/**
@@ -107,10 +101,10 @@ class mDB
 	 * @param string $mysql_host Can be either a host name or an IP address
 	 * @param string $mysql_user The MySQL user name
 	 * @param string $mysql_pass If not provided or NULL, the MySQL server will attempt to authenticate the user against those user records which have no password only. This allows one username to be used with different permissions (depending on if a password as provided or not)
-	 * @param string $db_name [optional] If provided will specify the default database to be used when performing queries
-	 * @param string $charset [optional] Make set names query after connecting
-	 * @param int $port [optional] Specifies the port number to attempt to connect to the MySQL server
-	 * @param string $socket [optional] Specifies the socket or named pipe that should be used
+	 * @param string|null $db_name [optional] If provided will specify the default database to be used when performing queries
+	 * @param string|null $charset [optional] Make set names query after connecting
+	 * @param int|null $port [optional] Specifies the port number to attempt to connect to the MySQL server
+	 * @param string|null $socket [optional] Specifies the socket or named pipe that should be used
 	 */
 	public function __construct(string $mysql_host, string $mysql_user, string $mysql_pass, string $db_name = null, string $charset = null, int $port = null, string $socket = null)
 	{
@@ -130,68 +124,138 @@ class mDB
 	public function getInstance(): mysqli
 	{
 		$this->ConnectBase();
+        if ($this->instance === null) {
+            // safety net
+            $this->ShowError('Database instance is null', true);
+            // create dummy to avoid type errors
+            $this->instance = new mysqli();
+        }
 		return $this->instance;
 	}
 
-	private function ConnectBase()
-	{
-		if ($this->connected)
-		{
-			if (($this->last_query_time + $this->ping_idle_time < time()))
-            {
-                try {
-                    $ping = @$this->instance->ping();
-                    if ($ping)
-                    {
-                        return;
-                    }
-                } catch (\Exception $e)
-                {
+    /**
+     * Main connect/reconnect routine.
+     */
+    private function ConnectBase()
+    {
+        // Fast path: connected and recently used
+        if ($this->connected && $this->instance instanceof mysqli) {
+            if (($this->last_query_time + $this->ping_idle_time) >= time()) {
+                return;
+            }
+
+            // If idle for long, check that connection is alive
+            try {
+                // ping can throw if MYSQLI_REPORT_STRICT is enabled
+                if (@$this->instance->ping()) {
+                    return;
                 }
-                // Trying to reconnect
-                $this->connected = false;
-            } else {
-				return;
-			}
-		}
-		$this->instance = @new mysqli(
-			$this->config['mysql_host'],
-			$this->config['mysql_user'],
-			$this->config['mysql_pass'],
-			$this->config['db_name'],
-			$this->config['port'],
-			$this->config['socket']
-		);
-		if ($this->instance->connect_errno) {
-			$this->ShowError('Database connect error');
-		}
-		$this->last_query_time = time();
-		if ($this->config['charset'] !== null)
-		{
-			$this->instance->set_charset($this->config['charset']) or $this->ShowError($this->instance->error);
-		}
-		$this->connected = true;
-	}
+            } catch (\Throwable $e) {
+                // fallthrough to reconnect
+            }
+
+            $this->connected = false;
+            $this->safeClose();
+        }
+
+        // Reconnect attempts
+        $lastError = null;
+
+        for ($attempt = 1; $attempt <= $this->reconnect_attempts; $attempt++) {
+            try {
+                $this->instance = $this->createMysqli();
+                $this->connected = true;
+                $this->last_query_time = time();
+                return;
+            } catch (\Throwable $e) {
+                $lastError = $e;
+
+                // backoff before next attempt
+                if ($attempt < $this->reconnect_attempts) {
+                    usleep($this->reconnect_backoff_us);
+                }
+            }
+        }
+
+        $msg = 'Database connect error';
+        if ($lastError) {
+            $msg .= ': ' . $lastError->getMessage();
+        }
+        $this->ShowError($msg, true);
+    }
+
+    private function createMysqli(): mysqli
+    {
+        // If socket is configured, and it doesn't exist — это частая причина "No such file or directory"
+        if (!empty($this->config['socket']) && is_string($this->config['socket'])) {
+            if (!file_exists($this->config['socket'])) {
+                // Not fatal by itself (mysql could be TCP), но очень полезно в логах
+                $this->log_error('Socket not found: ' . $this->config['socket']);
+            }
+        }
+
+        // Avoid global side effects: set report mode locally and restore
+        $oldMode = mysqli_report(MYSQLI_REPORT_OFF);
+
+        try {
+            $mysqli = new mysqli(
+                (string)$this->config['mysql_host'],
+                (string)$this->config['mysql_user'],
+                (string)$this->config['mysql_pass'],
+                $this->config['db_name'],
+                $this->config['port'],
+                $this->config['socket']
+            );
+
+            if ($mysqli->connect_errno) {
+                throw new \RuntimeException($mysqli->connect_error ?: 'Unknown connect error', $mysqli->connect_errno);
+            }
+
+            if (!empty($this->config['charset'])) {
+                if (!$mysqli->set_charset((string)$this->config['charset'])) {
+                    throw new \RuntimeException($mysqli->error ?: 'Failed to set charset');
+                }
+            }
+
+            return $mysqli;
+        } finally {
+            mysqli_report($oldMode);
+        }
+    }
+
+    private function safeClose()
+    {
+        try {
+            if ($this->instance instanceof mysqli) {
+                @$this->instance->close();
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        } finally {
+            $this->instance = null;
+            $this->connected = false;
+        }
+    }
 
 	/**
 	 * @param bool|string $msg
 	 */
-	public function ShowError($msg = false, $add_error_log = false )
+	public function ShowError($msg = false, bool $add_error_log = false )
 	{
 		if ($add_error_log)
 		{
-			$this->log_error($msg);
+			$this->log_error((string)$msg);
 		}
 		if (!$msg) {
 			$msg = 'Database query error';
 		}
 		if ($this->error_handler)
 		{
-			$function = $this->error_handler;
-			$function($msg);
-		} else {
-			error_log($msg);
+            $handler = $this->error_handler;
+            $handler($msg);
+            return;
 		}
+        error_log((string)$msg);
 	}
 
 	/**
@@ -228,6 +292,7 @@ class mDB
 	 */
 	public function affectedRows(): int
 	{
+        $this->ConnectBase();
 		return mysqli_affected_rows ($this->instance);
 	}
 
@@ -238,6 +303,7 @@ class mDB
 	 */
 	public function insertId(): int
 	{
+        $this->ConnectBase();
 		return mysqli_insert_id($this->instance);
 	}
 
@@ -571,7 +637,7 @@ class mDB
 			return null;
 		}
 		$last = end($this->stats);
-		return $last['query'];
+		return $last['query'] ?? null;
 	}
 
 	/**
@@ -593,16 +659,32 @@ class mDB
 	 */
 	protected function rawQuery(string $query)
 	{
+        if ($query === '') {
+            return false;
+        }
 		$this->ConnectBase();
 		$this->last_query_time = time();
 		if ($this->log_sql !== false) {
 			$this->log_sql($query);
 		}
-		$start = 0;
+		$start = 0.0;
 		if ($this->save_stats) {
 			$start = microtime(TRUE);
 		}
-		$res = mysqli_query($this->instance, $query);
+		$res = mysqli_query($this->getInstance(), $query);
+
+        // If server dropped, attempt one reconnect and retry once
+        if (!$res) {
+            $errno = $this->getInstance()->errno;
+            // 2006: MySQL server has gone away, 2013: Lost connection during query
+            if ($errno === 2006 || $errno === 2013) {
+                $this->connected = false;
+                $this->safeClose();
+                $this->ConnectBase();
+                $res = mysqli_query($this->getInstance(), $query);
+            }
+        }
+
 		if ($this->save_stats)
 		{
 			$timer = microtime(TRUE) - $start;
@@ -616,16 +698,16 @@ class mDB
 			end($this->stats);
 			$key = key($this->stats);
 			if (!$res) {
-				$error = mysqli_error($this->instance);
-				$this->stats[$key]['error'] = $error;
+                $this->stats[$key]['error'] = mysqli_error($this->getInstance());
 			} else {
-				$this->stats[$key]['rows'] = $this->instance->affected_rows;
+                $this->stats[$key]['rows'] = $this->getInstance()->affected_rows;
 			}
 			$this->cutStats();
 		}
 		if (!$res) {
+            $err = $this->GetError();
 			$this->log_error($query);
-			$this->ShowError();
+			$this->ShowError($err ? ('Database query error: ' . $err) : 'Database query error');
 		}
 		return $res;
 	}
@@ -692,7 +774,7 @@ class mDB
 		}
 		if (is_float($value))
 		{
-			$value = number_format($value, 6, '.', ''); // may lose precision on big numbers
+			$value = number_format($value, 16, '.', ''); // may lose precision on big numbers
 		}
         if (strpos($value, 'e') !== false)
         {
@@ -709,7 +791,7 @@ class mDB
 			return 'NULL';
 		}
 		$this->ConnectBase();
-		return	"'".mysqli_real_escape_string($this->instance, $value)."'";
+		return	"'".mysqli_real_escape_string($this->getInstance(), $value)."'";
 	}
 
 	protected function escapeIdent($value): string
@@ -732,13 +814,16 @@ class mDB
 		{
 			return 'NULL';
 		}
-		$query = $comma = '';
-		foreach ($data as $value)
-		{
-			$query .= $comma.$this->escapeString($value);
-			$comma  = ',';
-		}
-		return $query;
+        $parts = [];
+        foreach ($data as $value) {
+            if (is_int($value) || is_float($value)) {
+                $parts[] = $this->escapeInt($value);
+            } else {
+                $parts[] = $this->escapeString($value);
+            }
+        }
+
+        return implode(',', $parts);
 	}
 
 	protected function createSET($data):string
@@ -751,22 +836,19 @@ class mDB
 		{
 			$this->ShowError('Empty array for SET (?u) placeholder', true);
 		}
-		$query = $comma = '';
-		foreach ($data as $key => $value)
-		{
-			// Check if value is DB::pure object
-			if (is_int($value) || is_float($value))
-			{
-				$str = $this->escapeInt($value);
-			} elseif (is_object($value) && isset($value->sql)) {
-				$str = $value->sql;
-			} else {
-				$str = $this->escapeString($value);
-			}
-			$query .= $comma.$this->escapeIdent($key).'='.$str;
-			$comma  = ',';
-		}
-		return $query;
+        $parts = [];
+        foreach ($data as $key => $value) {
+            if (is_int($value) || is_float($value)) {
+                $str = $this->escapeInt($value);
+            } elseif (is_object($value) && isset($value->sql)) {
+                $str = (string)$value->sql; // DB::pure
+            } else {
+                $str = $this->escapeString($value);
+            }
+            $parts[] = $this->escapeIdent($key) . '=' . $str;
+        }
+
+        return implode(',', $parts);
 	}
 
 	/**
@@ -789,13 +871,16 @@ class mDB
 	 */
 	public function GetError()
 	{
-		if ($this->instance->connect_errno > 0) {
-			return $this->instance->connect_error;
-		}
-		if ($this->instance->errno > 0) {
-			return $this->instance->error;
-		}
-		return false;
+        if (!($this->instance instanceof mysqli)) {
+            return false;
+        }
+        if ($this->instance->connect_errno > 0) {
+            return $this->instance->connect_error;
+        }
+        if ($this->instance->errno > 0) {
+            return $this->instance->error;
+        }
+        return false;
 	}
 
 	public static function GetDate(): string
@@ -820,41 +905,53 @@ class mDB
 
 	private static function GetBacktraceInfo($max_id = 2): string
 	{
-		$bt = debug_backtrace();
-		$l = '';
-		foreach ($bt as $i => $val)
-		{
-			if ($i < 2) {
-				continue;
-			}
-			if ($i > $max_id) {
-				break;
-			}
-			if (isset($val['file'])) {
-				$l .= sprintf('File: %s, Line: %s, Function: %s, Args: %s', $val['file'], $val['line'], $val['function'], self::ParseArgs($val['args'])) . "\n";
-			}
-		}
-		return $l;
+        $bt = debug_backtrace();
+        $l = '';
+        foreach ($bt as $i => $val) {
+            if ($i < 2) {
+                continue;
+            }
+            if ($i > $max_id) {
+                break;
+            }
+            if (isset($val['file'])) {
+                $l .= sprintf(
+                        'File: %s, Line: %s, Function: %s, Args: %s',
+                        $val['file'],
+                        $val['line'] ?? '',
+                        $val['function'] ?? '',
+                        self::ParseArgs($val['args'] ?? [])
+                    ) . "\n";
+            }
+        }
+        return $l;
 	}
 
 	private function log_sql($sql)
 	{
+        if ($this->log_sql === false) {
+            return;
+        }
 		$msg = self::GetDate().' '.$sql.PHP_EOL;
 		if ($this->log_sql_debug)
 		{
 			$msg .= self::GetBacktraceInfo().PHP_EOL;
 		}
-		file_put_contents($this->log_sql, $msg, FILE_APPEND);
+		@file_put_contents((string)$this->log_sql, $msg, FILE_APPEND);
 	}
 
 	private function log_error($sql)
 	{
-		$msg = self::GetDate().' '.$this->GetError().PHP_EOL.'Query: '.$sql.PHP_EOL.self::GetBacktraceInfo(10).PHP_EOL;
-		if ($this->error_log === false)
-		{
-			error_log($msg);
-			return;
-		}
-		file_put_contents($this->error_log, $msg, FILE_APPEND);
+        $err = (string)$this->GetError();
+        $msg = self::GetDate() . ' ' . $err . PHP_EOL .
+            'Query: ' . $sql . PHP_EOL .
+            self::GetBacktraceInfo(10) . PHP_EOL;
+
+        if ($this->error_log === false) {
+            error_log($msg);
+            return;
+        }
+
+        @file_put_contents((string)$this->error_log, $msg, FILE_APPEND);
 	}
 }
